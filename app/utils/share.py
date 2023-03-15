@@ -1,76 +1,26 @@
 import base64
 import copy
 import json
+import secrets
 import urllib.parse as urlparse
-from typing import List, Union
+from typing import Union
 from uuid import UUID
 
 import yaml
-from app.xray import INBOUNDS
-from config import XRAY_HOSTS
+
+from app import xray
+from app.utils.store import XrayStore
+from app.utils.system import readable_size
+from config import SERVER_IP
+from datetime import datetime as dt
 
 
-class ShareLink(str):
-    def __new__(cls, remark: str, host: str, protocol: str, settings: dict):
-        if protocol == 'vmess':
-            links = []
-            for i in INBOUNDS[protocol]:
-                links.append(
-                    cls.vmess(remark=remark,
-                              address=host,
-                              port=i['port'],
-                              id=settings['id'],
-                              net=i['stream']['net'],
-                              tls=i['stream']['tls'],
-                              sni=i['stream']['sni'],
-                              host=i['stream']['sni'],
-                              path=i['stream']['path'])
-                )
-            return '\n'.join(links)
+class FormatVariables(dict):
+    def __missing__(self, key):
+        return key.join("{}")
 
-        if protocol == 'vless':
-            links = []
-            for i in INBOUNDS[protocol]:
-                links.append(
-                    cls.vless(remark=remark,
-                              address=host,
-                              port=i['port'],
-                              id=settings['id'],
-                              net=i['stream']['net'],
-                              tls=i['stream']['tls'],
-                              sni=i['stream']['sni'],
-                              host=i['stream']['sni'],
-                              path=i['stream']['path'])
-                )
-            return '\n'.join(links)
 
-        if protocol == 'trojan':
-            links = []
-            for i in INBOUNDS[protocol]:
-                links.append(
-                    cls.trojan(remark=remark,
-                               address=host,
-                               port=i['port'],
-                               password=settings['password'],
-                               net=i['stream']['net'],
-                               tls=i['stream']['tls'],
-                               sni=i['stream']['sni'],
-                               host=i['stream']['sni'],
-                               path=i['stream']['path'])
-                )
-            return '\n'.join(links)
-
-        if protocol == 'shadowsocks':
-            links = []
-            for i in INBOUNDS[protocol]:
-                links.append(
-                    cls.shadowsocks(remark=remark,
-                                    address=host,
-                                    port=i['port'],
-                                    password=settings['password'])
-                )
-            return '\n'.join(links)
-
+class V2rayShareLink(str):
     @classmethod
     def vmess(cls,
               remark: str,
@@ -109,13 +59,15 @@ class ShareLink(str):
               path='',
               tls=False,
               host='',
-              sni=''):
+              sni='',
+              type=''):
 
         opts = {
             "security": "tls" if tls else "none",
             "type": net,
             "host": host,
-            "sni": sni
+            "sni": sni,
+            "headerType": type
         }
         if net == 'grpc':
             opts['serviceName'] = urlparse.quote(path)
@@ -136,13 +88,15 @@ class ShareLink(str):
                path='',
                tls=False,
                host='',
-               sni=''):
+               sni='',
+               type=''):
 
         opts = {
             "security": "tls" if tls else "none",
             "type": net,
             "host": host,
-            "sni": sni
+            "sni": sni,
+            "headerType": type
         }
         if net == 'grpc':
             opts['serviceName'] = urlparse.quote(path)
@@ -202,37 +156,34 @@ class ClashConfiguration(object):
                 return new
             c += 1
 
-    def add(self, remark: str, host: str, protocol: str, settings: dict):
-        if protocol == 'vmess':
-            for i in INBOUNDS[protocol]:
-                self.add_vmess(remark=remark,
-                               address=host,
-                               port=i['port'],
-                               id=settings['id'],
-                               net=i['stream']['net'],
-                               tls=i['stream']['tls'],
-                               sni=i['stream']['sni'],
-                               host=i['stream']['sni'],
-                               path=i['stream']['path'])
+    def add(self, remark: str, address: str, inbound: dict, settings: dict):
+        if inbound['protocol'] == 'vmess':
+            self.add_vmess(remark=remark,
+                           address=address,
+                           port=inbound['port'],
+                           id=settings['id'],
+                           net=inbound['network'],
+                           tls=inbound['tls'],
+                           sni=inbound['sni'],
+                           host=inbound['host'],
+                           path=inbound['path'])
 
-        if protocol == 'trojan':
-            for i in INBOUNDS[protocol]:
-                self.add_trojan(remark=remark,
-                                address=host,
-                                port=i['port'],
-                                password=settings['password'],
-                                net=i['stream']['net'],
-                                tls=i['stream']['tls'],
-                                sni=i['stream']['sni'],
-                                host=i['stream']['sni'],
-                                path=i['stream']['path'])
+        if inbound['protocol'] == 'trojan':
+            self.add_trojan(remark=remark,
+                            address=address,
+                            port=inbound['port'],
+                            password=settings['password'],
+                            net=inbound['network'],
+                            tls=inbound['tls'],
+                            sni=inbound['sni'],
+                            host=inbound['host'],
+                            path=inbound['path'])
 
-        if protocol == 'shadowsocks':
-            for i in INBOUNDS[protocol]:
-                self.add_shadowsocks(remark=remark,
-                                     address=host,
-                                     port=i['port'],
-                                     password=settings['password'])
+        if inbound['protocol'] == 'shadowsocks':
+            self.add_shadowsocks(remark=remark,
+                                 address=address,
+                                 port=inbound['port'],
+                                 password=settings['password'])
 
     def add_vmess(self,
                   remark: str,
@@ -256,11 +207,12 @@ class ClashConfiguration(object):
                 f'{net}-opts': {
                     'path': path
                 }}
-        if tls is True:
+        if host:
+            node[f'{net}-opts']['headers'] = {'Host': host}
+        if tls:
             node.update({'tls': tls,
                          'servername': sni,
                          'network': net})
-            node[f'{net}-opts']['headers'] = {'Host': host}
         self.data['proxies'].append(node)
 
     def add_trojan(self,
@@ -303,13 +255,153 @@ class ClashConfiguration(object):
                                      'udp': True})
 
 
-def get_clash_sub(username: str, proxies: dict):
-    conf = ClashConfiguration()
-    for host in XRAY_HOSTS:
-        for proxy_type, settings in proxies.items():
-            conf.add(host['remark'], host['hostname'], proxy_type, settings.dict(no_obj=True))
-    return conf
+def get_v2ray_link(remark: str, address: str, inbound: dict, settings: dict):
+    if inbound['protocol'] == 'vmess':
+        return V2rayShareLink.vmess(remark=remark,
+                                    address=address,
+                                    port=inbound['port'],
+                                    id=settings['id'],
+                                    net=inbound['network'],
+                                    tls=inbound['tls'],
+                                    sni=inbound['sni'],
+                                    host=inbound['host'],
+                                    path=inbound['path'],
+                                    type=inbound['header_type'])
+
+    if inbound['protocol'] == 'vless':
+        return V2rayShareLink.vless(remark=remark,
+                                    address=address,
+                                    port=inbound['port'],
+                                    id=settings['id'],
+                                    net=inbound['network'],
+                                    tls=inbound['tls'],
+                                    sni=inbound['sni'],
+                                    host=inbound['host'],
+                                    path=inbound['path'],
+                                    type=inbound['header_type'])
+
+    if inbound['protocol'] == 'trojan':
+        return V2rayShareLink.trojan(remark=remark,
+                                     address=address,
+                                     port=inbound['port'],
+                                     password=settings['password'],
+                                     net=inbound['network'],
+                                     tls=inbound['tls'],
+                                     sni=inbound['sni'],
+                                     host=inbound['host'],
+                                     path=inbound['path'],
+                                     type=inbound['header_type'])
+
+    if inbound['protocol'] == 'shadowsocks':
+        return V2rayShareLink.shadowsocks(remark=remark,
+                                          address=address,
+                                          port=inbound['port'],
+                                          password=settings['password'])
 
 
-def get_v2ray_sub(links: list):
+def generate_v2ray_links(proxies: dict, inbounds: dict, extra_data: dict) -> list:
+    links = []
+    salt = secrets.token_urlsafe(12).lower()
+
+    if (extra_data.get('expire') or 0) > 0:
+        days_left = (dt.fromtimestamp(extra_data['expire']) - dt.now()).days + 1
+        if not days_left > 0:
+            days_left = 0
+    else:
+        days_left = '∞'
+
+    data_limit = readable_size(extra_data.get('data_limit')) \
+        if extra_data.get('data_limit') else '∞'
+
+    format_variables = FormatVariables({
+        "SERVER_IP": SERVER_IP,
+        "USERNAME": extra_data.get('username', '{USERNAME}'),
+        "DATA_USAGE": readable_size(extra_data.get('used_traffic')),
+        "DATA_LIMIT": data_limit,
+        "DAYS_LEFT": days_left
+    })
+
+    for protocol, tags in inbounds.items():
+        settings = proxies.get(protocol)
+        if not settings:
+            continue
+
+        format_variables.update({"PROTOCOL": protocol.name})
+        for tag in tags:
+            inbound = xray.config.inbounds_by_tag.get(tag)
+            if not inbound:
+                continue
+
+            format_variables.update({"TRANSPORT": inbound['network']})
+            inbound = inbound.copy()
+            for host in XrayStore.HOSTS.get(tag, []):
+                inbound.update({
+                    'port': host['port'] or inbound['port'],
+                    'sni': (host['sni'] or inbound['sni']).replace('*', salt),
+                    'host': (host['host'] or inbound['host']).replace('*', salt),
+                    # None means host tls complies with inbound's tls settings.
+                    'tls': inbound['tls'] if host['tls'] is None else host['tls']
+                })
+                links.append(get_v2ray_link(remark=host['remark'].format_map(format_variables),
+                                            address=host['address'].format_map(format_variables),
+                                            inbound=inbound,
+                                            settings=settings.dict()))
+
+    return links
+
+
+def generate_v2ray_subscription(links: list) -> str:
     return base64.b64encode('\n'.join(links).encode()).decode()
+
+
+def generate_clash_subscription(proxies: dict, inbounds: dict, extra_data: dict) -> str:
+    conf = ClashConfiguration()
+    salt = secrets.token_urlsafe(12).lower()
+
+    if (extra_data.get('expire') or 0) > 0:
+        days_left = (dt.fromtimestamp(extra_data['expire']) - dt.now()).days + 1
+        if not days_left > 0:
+            days_left = 0
+    else:
+        days_left = '∞'
+
+    data_limit = readable_size(extra_data.get('data_limit')) \
+        if extra_data.get('data_limit') else '∞'
+
+    format_variables = FormatVariables({
+        "SERVER_IP": SERVER_IP,
+        "USERNAME": extra_data.get('username', '{USERNAME}'),
+        "DATA_USAGE": readable_size(extra_data.get('used_traffic')),
+        "DATA_LIMIT": data_limit,
+        "DAYS_LEFT": days_left
+    })
+
+    for protocol, tags in inbounds.items():
+        settings = proxies.get(protocol)
+        if not settings:
+            continue
+
+        format_variables.update({"PROTOCOL": protocol.name})
+        for tag in tags:
+            inbound = xray.config.inbounds_by_tag.get(tag)
+            if not inbound:
+                continue
+
+            format_variables.update({"TRANSPORT": inbound['network']})
+            inbound = inbound.copy()
+            for host in XrayStore.HOSTS.get(tag, []):
+                inbound.update({
+                    'port': host['port'] or inbound['port'],
+                    'sni': (host['sni'] or inbound['sni']).replace('*', salt),
+                    'host': (host['host'] or inbound['host']).replace('*', salt),
+                    # None means host tls complies with inbound's tls settings.
+                    'tls': inbound['tls'] if host['tls'] is None else host['tls']
+                })
+                conf.add(
+                    remark=host['remark'].format_map(format_variables),
+                    address=host['address'].format_map(format_variables),
+                    inbound=inbound,
+                    settings=settings.dict(no_obj=True),
+                )
+
+    return conf.to_yaml()

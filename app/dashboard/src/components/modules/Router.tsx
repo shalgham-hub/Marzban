@@ -1,5 +1,4 @@
-import { DashboardProvider } from "../../contexts/DashboardContext";
-import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, createHashRouter } from "react-router-dom";
 import { Dashboard } from "../../pages/Dashboard";
 import { Login } from "../../pages/Login";
 import { fetch } from "../../service/http";
@@ -17,11 +16,7 @@ export const router = createBrowserRouter(
   [
     {
       path: "/",
-      element: (
-        <DashboardProvider>
-          <Dashboard />
-        </DashboardProvider>
-      ),
+      element: <Dashboard />,
       errorElement: <Login />,
       loader: fetchAdminLoader,
     },

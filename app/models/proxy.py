@@ -1,10 +1,10 @@
 import json
 from enum import Enum
-from multiprocessing.sharedctypes import Value
+from typing import List, Union
 from uuid import UUID, uuid4
 
 from app.utils.system import random_password
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from xray_api.types.account import (ShadowsocksAccount, TrojanAccount,
                                     VLESSAccount, VMessAccount)
 
@@ -41,8 +41,6 @@ class ProxyTypes(str, Enum):
 
 
 class ProxySettings(BaseModel):
-    pass
-
     @classmethod
     def from_dict(cls, proxy_type: ProxyTypes, _dict: dict):
         return ProxyTypes(proxy_type).settings_model.parse_obj(_dict)
@@ -68,3 +66,29 @@ class TrojanSettings(ProxySettings):
 
 class ShadowsocksSettings(ProxySettings):
     password: str = Field(default_factory=random_password)
+
+
+class ProxyHostSecurity(str, Enum):
+    inbound_default = "inbound_default"
+    none = "none"
+    tls = "tls"
+
+
+class ProxyHost(BaseModel):
+    remark: str
+    address: str
+    port: Union[int, None] = None
+    sni: Union[str, None] = None
+    host: Union[str, None] = None
+    security: ProxyHostSecurity = ProxyHostSecurity.inbound_default
+
+    class Config:
+        orm_mode = True
+
+
+class ProxyInbound(BaseModel):
+    tag: str
+    protocol: ProxyTypes
+    network: str
+    tls: bool
+    port: int

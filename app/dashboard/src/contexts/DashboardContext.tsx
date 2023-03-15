@@ -1,205 +1,193 @@
-import React, {
-  FC,
-  PropsWithChildren,
-  Reducer,
-  useCallback,
-  useContext,
-  useMemo,
-  useReducer,
-} from "react";
 import { fetch } from "service/http";
-import useSWR, { mutate as globalMutate } from "swr";
+import { mutate as globalMutate } from "swr";
 import { User, UserCreate } from "types/User";
+import { create } from "zustand";
+import { subscribeWithSelector } from "zustand/middleware";
 
 export type FilterType = {
-  search: string;
+  username?: string;
+  limit?: number;
+  offset?: number;
+  sort: string;
+  status?: "active" | "disabled" | "limited" | "expired";
 };
+export type ProtocolType = "vmess" | "vless" | "trojan" | "shadowsocks";
+
+export type InboundType = {
+  tag: string;
+  protocol: ProtocolType;
+  network: string;
+  tls: boolean;
+  port: number;
+};
+export type Inbounds = Map<ProtocolType, InboundType[]>;
 
 type DashboardStateType = {
   isCreatingNewUser: boolean;
-  editingUser: User | null;
+  editingUser: User | null | undefined;
   deletingUser: User | null;
-  users: User[];
-  filteredUsers: User[];
+  users: {
+    users: User[];
+    total: number;
+  };
+  inbounds: Inbounds;
   loading: boolean;
   filters: FilterType;
-  qrcodeLinks: string[] | null;
-};
-type DashboardActionsType =
-  | { type: "EditingUser"; user: User | null }
-  | { type: "DeletingUser"; user: User | null }
-  | { type: "CreatingNewUser"; isOpen: boolean }
-  | { type: "FilterChange"; filters: FilterType }
-  | { type: "SetQrCode"; links: string[] | null };
-
-type DashboardContextType = {
+  subscribeUrl: string | null;
+  QRcodeLinks: string[] | null;
+  isEditingHosts: boolean;
+  resetUsageUser: User | null;
   onCreateUser: (isOpen: boolean) => void;
   onEditingUser: (user: User | null) => void;
   onDeletingUser: (user: User | null) => void;
   refetchUsers: () => void;
-  onFilterChange: (filters: FilterType) => void;
+  onFilterChange: (filters: Partial<FilterType>) => void;
   deleteUser: (user: User) => Promise<void>;
   createUser: (user: UserCreate) => Promise<void>;
   editUser: (user: UserCreate) => Promise<void>;
   setQRCode: (links: string[] | null) => void;
-} & DashboardStateType;
-
-const dashboardContextInitialValue: DashboardContextType = {
-  editingUser: null,
-  deletingUser: null,
-  isCreatingNewUser: false,
-  qrcodeLinks: null,
-  users: [],
-  filteredUsers: [],
-  loading: true,
-  filters: { search: "" },
-  onCreateUser: () => {},
-  onEditingUser: (user) => {},
-  onDeletingUser: (user) => {},
-  refetchUsers: () => {},
-  onFilterChange: (filters) => {},
-  setQRCode: (links) => {},
-  deleteUser: (user) => {
-    return new Promise(() => {});
-  },
-  createUser: (user) => {
-    return new Promise(() => {});
-  },
-  editUser: (user) => {
-    return new Promise(() => {});
-  },
+  setSubLink: (subscribeURL: string | null) => void;
+  onEditingHosts: (isEditingHosts: boolean) => void;
+  resetDataUsage: (user: User) => Promise<void>;
 };
 
-export const DashboardContext = React.createContext<DashboardContextType>(
-  dashboardContextInitialValue
-);
-
-export const useDashboard = () => useContext(DashboardContext);
-
-type DashboardProviderProps = PropsWithChildren<{}>;
-
-const dashboardReducer: Reducer<DashboardStateType, DashboardActionsType> = (
-  state,
-  action
-) => {
-  switch (action.type) {
-    case "CreatingNewUser":
-      return { ...state, isCreatingNewUser: action.isOpen };
-    case "EditingUser":
-      return { ...state, editingUser: action.user };
-    case "DeletingUser":
-      return { ...state, deletingUser: action.user };
-    case "FilterChange":
-      return { ...state, filters: action.filters };
-    case "SetQrCode":
-      return { ...state, qrcodeLinks: action.links };
-    default:
-      return state;
+const fetchUsers = (query: FilterType): Promise<User[]> => {
+  for (const key in query) {
+    if (!query[key as keyof FilterType]) delete query[key as keyof FilterType];
   }
+  useDashboard.setState({ loading: true });
+  return fetch("/users", { query })
+    .then((users) => {
+      useDashboard.setState({ users });
+      return users;
+    })
+    .finally(() => {
+      useDashboard.setState({ loading: false });
+    });
 };
 
-export const DashboardProvider: FC<DashboardProviderProps> = ({ children }) => {
-  const [state, dispatch] = useReducer(
-    dashboardReducer,
-    dashboardContextInitialValue
-  );
-
-  const {
-    data: users,
-    isValidating: usersLoading,
-    mutate,
-  } = useSWR<User[]>("/users");
-
-  const onCreateUser = useCallback((isOpen: boolean) => {
-    dispatch({
-      type: "CreatingNewUser",
-      isOpen,
+export const fetchInbounds = () => {
+  return fetch("/inbounds")
+    .then((inbounds: Inbounds) => {
+      useDashboard.setState({
+        inbounds: new Map(Object.entries(inbounds)) as Inbounds,
+      });
+    })
+    .finally(() => {
+      useDashboard.setState({ loading: false });
     });
-  }, []);
-  const refetchUsers = useCallback(() => {
-    mutate();
-  }, []);
-
-  const onEditingUser = useCallback((user: User | null) => {
-    dispatch({
-      type: "EditingUser",
-      user,
-    });
-  }, []);
-
-  const onDeletingUser = useCallback((user: User | null) => {
-    dispatch({
-      type: "DeletingUser",
-      user,
-    });
-  }, []);
-
-  const onFilterChange = useCallback((filters: FilterType) => {
-    dispatch({
-      type: "FilterChange",
-      filters,
-    });
-  }, []);
-
-  const deleteUser = useCallback((user: User) => {
-    onEditingUser(null);
-    return fetch(`/user/${user.username}`, { method: "DELETE" }).then(() => {
-      onDeletingUser(null);
-      refetchUsers();
-      globalMutate("/system");
-    });
-  }, []);
-
-  const createUser = useCallback((body: UserCreate) => {
-    return fetch(`/user`, { method: "POST", body }).then(() => {
-      onEditingUser(null);
-      refetchUsers();
-      globalMutate("/system");
-    });
-  }, []);
-
-  const editUser = useCallback((body: UserCreate) => {
-    return fetch(`/user/${body.username}`, { method: "PUT", body }).then(() => {
-      onEditingUser(null);
-      refetchUsers();
-    });
-  }, []);
-
-  const setQRCode = useCallback((links: string[] | null) => {
-    dispatch({
-      type: "SetQrCode",
-      links,
-    });
-  }, []);
-
-  const filteredUsers = useMemo(() => {
-    if (!users) return [];
-    return users.filter(
-      (user) => user.username.indexOf(state.filters.search) > -1
-    );
-  }, [state.filters, users]);
-
-  const states: DashboardContextType = {
-    ...state,
-    users: users || [],
-    filteredUsers,
-    loading: usersLoading,
-    refetchUsers,
-    onEditingUser,
-    onDeletingUser,
-    onCreateUser,
-    onFilterChange,
-    deleteUser,
-    createUser,
-    editUser,
-    setQRCode,
-  };
-
-  return (
-    <DashboardContext.Provider value={states}>
-      {children}
-    </DashboardContext.Provider>
-  );
 };
 
-export default DashboardProvider;
+type HostsSchema = Record<
+  string,
+  {
+    remark: string;
+    address: string;
+    port: number | null;
+    sni: string | null;
+    host: string | null;
+  }[]
+>;
+
+type HostsStore = {
+  isLoading: boolean;
+  isPostLoading: boolean;
+  hosts: HostsSchema;
+  fetchHosts: () => void;
+  setHosts: (hosts: HostsSchema) => Promise<void>;
+};
+export const useHosts = create<HostsStore>((set) => ({
+  isLoading: false,
+  isPostLoading: false,
+  hosts: {},
+  fetchHosts: () => {
+    set({ isLoading: true });
+    fetch("/hosts")
+      .then((hosts) => set({ hosts }))
+      .finally(() => set({ isLoading: false }));
+  },
+  setHosts: (body) => {
+    set({ isPostLoading: true });
+    return fetch("/hosts", { method: "PUT", body }).finally(() => {
+      set({ isPostLoading: false });
+    });
+  },
+}));
+
+export const useDashboard = create(
+  subscribeWithSelector<DashboardStateType>((set, get) => ({
+    editingUser: null,
+    deletingUser: null,
+    isCreatingNewUser: false,
+    QRcodeLinks: null,
+    subscribeUrl: null,
+    users: {
+      users: [],
+      total: 0,
+    },
+    loading: true,
+    isEditingHosts: false,
+    resetUsageUser: null,
+    filters: { username: "", limit: 10, sort: "-created_at" },
+    inbounds: new Map(),
+    refetchUsers: () => {
+      fetchUsers(get().filters);
+    },
+    onCreateUser: (isCreatingNewUser) => set({ isCreatingNewUser }),
+    onEditingUser: (editingUser) => {
+      set({ editingUser });
+    },
+    onDeletingUser: (deletingUser) => {
+      set({ deletingUser });
+    },
+    onFilterChange: (filters) => {
+      set({
+        filters: {
+          ...get().filters,
+          ...filters,
+        },
+      });
+      get().refetchUsers();
+    },
+    setQRCode: (QRcodeLinks) => {
+      set({ QRcodeLinks });
+    },
+    deleteUser: (user: User) => {
+      set({ editingUser: null });
+      return fetch(`/user/${user.username}`, { method: "DELETE" }).then(() => {
+        set({ deletingUser: null });
+        get().refetchUsers();
+        globalMutate("/system");
+      });
+    },
+    createUser: (body: UserCreate) => {
+      return fetch(`/user`, { method: "POST", body }).then(() => {
+        set({ editingUser: null });
+        get().refetchUsers();
+        globalMutate("/system");
+      });
+    },
+    editUser: (body: UserCreate) => {
+      return fetch(`/user/${body.username}`, { method: "PUT", body }).then(
+        () => {
+          get().onEditingUser(null);
+          get().refetchUsers();
+        }
+      );
+    },
+    onEditingHosts: (isEditingHosts: boolean) => {
+      set({ isEditingHosts });
+    },
+    setSubLink: (subscribeUrl) => {
+      set({ subscribeUrl });
+    },
+    resetDataUsage: (user) => {
+      return fetch(`/user/${user.username}/reset`, { method: "POST" }).then(
+        () => {
+          set({ resetUsageUser: null });
+          get().refetchUsers();
+        }
+      );
+    },
+  }))
+);

@@ -4,11 +4,13 @@ import {
   chakra,
   HStack,
   IconButton,
+  Select,
   Slider,
   SliderFilledTrack,
   SliderProps,
   SliderTrack,
   Table,
+  TableContainer,
   TableProps,
   Tbody,
   Td,
@@ -17,19 +19,25 @@ import {
   Thead,
   Tooltip,
   Tr,
+  useBreakpointValue,
 } from "@chakra-ui/react";
 import {
   CheckIcon,
   ClipboardIcon,
   LinkIcon,
   QrCodeIcon,
+  ArrowPathIcon,
+  ChevronDownIcon,
 } from "@heroicons/react/24/outline";
-import { FC, useEffect, useState } from "react";
+import { FC, useCallback, useEffect, useState } from "react";
 import { ReactComponent as AddFileIcon } from "assets/add_file.svg";
 import { formatBytes } from "utils/formatByte";
 import { useDashboard } from "contexts/DashboardContext";
 import CopyToClipboard from "react-copy-to-clipboard";
 import { UserBadge } from "./UserBadge";
+import { Pagination } from "./Pagination";
+import classNames from "classnames";
+import { statusColors } from "constants/UserSettings";
 
 const EmptySectionIcon = chakra(AddFileIcon);
 
@@ -43,13 +51,27 @@ const CopyIcon = chakra(ClipboardIcon, iconProps);
 const CopiedIcon = chakra(CheckIcon, iconProps);
 const SubscriptionLinkIcon = chakra(LinkIcon, iconProps);
 const QRIcon = chakra(QrCodeIcon, iconProps);
-
+const SortIcon = chakra(ChevronDownIcon, {
+  baseStyle: {
+    width: "15px",
+    height: "15px",
+  },
+});
 type UsageSliderProps = {
   used: number;
   total: number | null;
+  dataLimitResetStrategy: string | null;
+  totalUsedTraffic: number;
 } & SliderProps;
+
 const UsageSlider: FC<UsageSliderProps> = (props) => {
-  const { used, total, ...restOfProps } = props;
+  const {
+    used,
+    total,
+    dataLimitResetStrategy,
+    totalUsedTraffic,
+    ...restOfProps
+  } = props;
   const isUnlimited = total === 0 || total === null;
   const isReached = !isUnlimited && (used / total) * 100 >= 100;
   return (
@@ -64,7 +86,8 @@ const UsageSlider: FC<UsageSliderProps> = (props) => {
           <SliderFilledTrack borderRadius="full" />
         </SliderTrack>
       </Slider>
-      <Text
+      <HStack
+        justifyContent="space-between"
         fontSize="xs"
         fontWeight="medium"
         color="gray.600"
@@ -72,28 +95,55 @@ const UsageSlider: FC<UsageSliderProps> = (props) => {
           color: "gray.400",
         }}
       >
-        {formatBytes(used)} /{" "}
-        {isUnlimited ? (
-          <Text as="span" fontFamily="system-ui">
-            ∞
-          </Text>
-        ) : (
-          formatBytes(total)
-        )}
-      </Text>
+        <Text>
+          {formatBytes(used)} /{" "}
+          {isUnlimited ? (
+            <Text as="span" fontFamily="system-ui">
+              ∞
+            </Text>
+          ) : (
+            formatBytes(total) +
+            (dataLimitResetStrategy && dataLimitResetStrategy !== "no_reset"
+              ? " per " + dataLimitResetStrategy
+              : "")
+          )}
+        </Text>
+        <Text>Total: {formatBytes(totalUsedTraffic)}</Text>
+      </HStack>
     </>
   );
 };
-
+export type SortType = {
+  sort: string;
+  column: string;
+};
+export const Sort: FC<SortType> = ({ sort, column }) => {
+  if (sort.includes(column))
+    return (
+      <SortIcon
+        transform={sort.startsWith("-") ? "rotate(180deg)" : undefined}
+      />
+    );
+  return null;
+};
 type UsersTableProps = {} & TableProps;
 export const UsersTable: FC<UsersTableProps> = (props) => {
   const {
-    filteredUsers: users,
+    filters,
+    users: { users },
     users: totalUsers,
     onEditingUser,
     setQRCode,
+    setSubLink,
+    onFilterChange,
   } = useDashboard();
-  const isFiltered = users.length !== totalUsers.length;
+  const marginTop =
+    useBreakpointValue({
+      base: 120,
+      lg: 72,
+    }) || 72;
+
+  const isFiltered = users.length !== totalUsers.total;
   const [copied, setCopied] = useState([-1, -1, false]);
 
   useEffect(() => {
@@ -103,15 +153,113 @@ export const UsersTable: FC<UsersTableProps> = (props) => {
       }, 1000);
     }
   }, [copied]);
+
+  const tableFixHead = useCallback(() => {
+    const el = document.querySelectorAll("#users-table")[0] as HTMLElement;
+    const sT = window.scrollY;
+
+    document.querySelectorAll("#users-table thead th").forEach((th: any) => {
+      const transformY =
+        el.offsetTop - marginTop <= sT ? sT - el.offsetTop + marginTop : 0;
+      th.style.transform = `translateY(${transformY}px)`;
+    });
+  }, [marginTop, users]);
+
+  useEffect(() => {
+    window.addEventListener("scroll", tableFixHead);
+    window.addEventListener("resize", tableFixHead);
+    return () => {
+      window.removeEventListener("scroll", tableFixHead);
+      window.removeEventListener("resize", tableFixHead);
+    };
+  }, [tableFixHead]);
+  const handleSort = (column: string) => {
+    let newSort = filters.sort;
+    if (newSort.includes(column)) {
+      if (newSort.startsWith("-")) {
+        newSort = "-created_at";
+      } else {
+        newSort = "-" + column;
+      }
+    } else {
+      newSort = column;
+    }
+    onFilterChange({
+      sort: newSort,
+    });
+  };
+  const handleStatusFilter = (e: any) => {
+    onFilterChange({
+      status: e.target.value.length > 0 ? e.target.value : undefined,
+    });
+  };
   return (
-    <Box overflowX="auto" maxW="100vw">
+    <Box id="users-table" overflowX="auto">
       <Table {...props}>
-        <Thead>
+        <Thead zIndex="docked" position="relative">
           <Tr>
-            <Th>Username</Th>
-            <Th>status</Th>
-            <Th>banding usage</Th>
-            <Th></Th>
+            <Th
+              minW="150px"
+              cursor={"pointer"}
+              onClick={handleSort.bind(null, "username")}
+            >
+              <HStack>
+                <span>username</span>
+                <Sort sort={filters.sort} column="username" />
+              </HStack>
+            </Th>
+            <Th width="400px" minW="180px" cursor={"pointer"}>
+              <HStack spacing={0} position="relative">
+                <Text
+                  position="absolute"
+                  _dark={{
+                    bg: "gray.750",
+                  }}
+                  _light={{
+                    bg: "#F9FAFB",
+                  }}
+                  userSelect="none"
+                  pointerEvents="none"
+                  zIndex={1}
+                  w="100%"
+                >
+                  Status{filters.status ? ": " + filters.status : ""}
+                </Text>
+                <Select
+                  fontSize="xs"
+                  fontWeight="extrabold"
+                  textTransform="uppercase"
+                  cursor="pointer"
+                  p={0}
+                  border={0}
+                  h="auto"
+                  w="auto"
+                  icon={<></>}
+                  _focusVisible={{
+                    border: "0 !important",
+                  }}
+                  onChange={handleStatusFilter}
+                >
+                  <option></option>
+                  <option>active</option>
+                  <option>disabled</option>
+                  <option>limited</option>
+                  <option>expired</option>
+                </Select>
+              </HStack>
+            </Th>
+            <Th
+              width="350px"
+              minW="250px"
+              cursor={"pointer"}
+              onClick={handleSort.bind(null, "used_traffic")}
+            >
+              <HStack>
+                <span>data usage</span>
+                <Sort sort={filters.sort} column="used_traffic" />
+              </HStack>
+            </Th>
+            <Th width="200px"></Th>
           </Tr>
         </Thead>
         <Tbody>
@@ -120,21 +268,25 @@ export const UsersTable: FC<UsersTableProps> = (props) => {
             return (
               <Tr
                 key={user.username}
-                className="interactive"
+                className={classNames("interactive", {
+                  "last-row": i === users.length - 1,
+                })}
                 onClick={() => onEditingUser(user)}
               >
                 <Td minW="150px">{user.username}</Td>
-                <Td width="350px">
+                <Td width="400px" minW="180px">
                   <UserBadge expiryDate={user.expire} status={user.status} />
                 </Td>
-                <Td width="300px" minW="200px">
+                <Td width="350px" minW="250px">
                   <UsageSlider
+                    totalUsedTraffic={user.lifetime_used_traffic}
+                    dataLimitResetStrategy={user.data_limit_reset_strategy}
                     used={user.used_traffic}
                     total={user.data_limit}
-                    colorScheme={user.status === "limited" ? "red" : "primary"}
+                    colorScheme={statusColors[user.status].bandWidthColor}
                   />
                 </Td>
-                <Td width="150px">
+                <Td width="200px">
                   <HStack
                     justifyContent="flex-end"
                     onClick={(e) => {
@@ -223,6 +375,7 @@ export const UsersTable: FC<UsersTableProps> = (props) => {
                         }}
                         onClick={() => {
                           setQRCode(user.links);
+                          setSubLink(user.subscription_url);
                         }}
                       >
                         <QRIcon />
@@ -233,9 +386,21 @@ export const UsersTable: FC<UsersTableProps> = (props) => {
               </Tr>
             );
           })}
+          {users.length == 0 && (
+            <Tr>
+              <Td colSpan={4}>
+                <EmptySection isFiltered={isFiltered} />
+              </Td>
+            </Tr>
+          )}
+
+          <Tr p="0">
+            <Td colSpan={4} p={0} border="0 !important">
+              <Pagination />
+            </Td>
+          </Tr>
         </Tbody>
       </Table>
-      {users.length == 0 && <EmptySection isFiltered={isFiltered} />}
     </Box>
   );
 };
@@ -248,19 +413,13 @@ const EmptySection: FC<EmptySectionProps> = ({ isFiltered }) => {
   const { onCreateUser } = useDashboard();
   return (
     <Box
-      borderWidth="1px"
-      borderStyle="solid"
-      borderTop={0}
-      borderBottomRadius="8px"
       padding="5"
-      _dark={{
-        borderColor: "gray.600",
-      }}
       py="8"
       display="flex"
       alignItems="center"
       flexDirection="column"
-      experimental_spaceY={4}
+      gap={4}
+      w="full"
     >
       <EmptySectionIcon
         maxHeight="200px"
@@ -296,7 +455,7 @@ const EmptySection: FC<EmptySectionProps> = ({ isFiltered }) => {
           colorScheme="primary"
           onClick={() => onCreateUser(true)}
         >
-          Create user
+          Create User
         </Button>
       )}
     </Box>
