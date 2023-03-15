@@ -8,7 +8,9 @@ RUN apt-get update \
     && apt-get install -y curl unzip gcc python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -L https://github.com/Gozargah/Marzban-scripts/raw/master/install_latest_xray.sh | bash
+COPY install_xray.sh /install_xray.sh
+
+RUN chmod u+x /install_xray.sh && /install_xray.sh
 
 COPY . /code
 
