@@ -2,7 +2,7 @@
 
 # Download Xray latest
 
-XRAY_VERSION=v1.8.0
+XRAY_VERSION=v1.8.1
 DOMAIN_VERSION=202303110054
 
 check_if_running_as_root() {
