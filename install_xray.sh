@@ -2,8 +2,8 @@
 
 # Download Xray latest
 
-XRAY_VERSION=v1.8.10
-DOMAIN_VERSION=202401220028
+XRAY_VERSION=v25.2.21
+DOMAIN_VERSION=202502240036
 
 check_if_running_as_root() {
     # If you want to run as another user, please modify $EUID to be owned by this user
